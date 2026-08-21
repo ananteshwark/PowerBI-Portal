@@ -1,0 +1,21 @@
+# dependencies
+node_modules/
+
+# secrets — the service principal credential lives here. Never commit.
+.env
+.env.local
+.env.*.local
+*.pem
+*.pfx
+
+# build output
+dist/
+.next/
+out/
+*.tsbuildinfo
+
+# logs / runtime
+*.log
+npm-debug.log*
+coverage/
+.DS_Store
