@@ -22,7 +22,11 @@ export const logger = pino({
     ],
     censor: '[redacted]',
   },
+  // Logs go to stderr, always. Not merely convention: the CLI scripts print
+  // machine-readable output on stdout, and interleaved log lines make
+  // `validate:rls --json | jq` unparseable. Keeping the two streams separate is
+  // what makes that output pipeable.
   ...(config.isProduction
     ? {}
-    : { transport: { target: 'pino/file', options: { destination: 1 } } }),
-});
+    : { transport: { target: 'pino/file', options: { destination: 2 } } }),
+}, config.isProduction ? pino.destination(2) : undefined);

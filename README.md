@@ -79,6 +79,7 @@ backend/
       client.ts               Power BI REST: getReport, getDatasetRoles, GenerateToken
     services/
       embed.service.ts        ⭐ Authorization → identity resolution → fail-closed → mint
+      rlsValidator.service.ts Detects RLS mapping drift (the silent failure mode)
       identity.service.ts     Portal role → Power BI RLS role, per dataset
       reports.service.ts      Report catalogue and the access check
       tokenCache.ts           Embed-token cache, single-flight, identity-keyed
@@ -86,7 +87,7 @@ backend/
     routes/                   auth · reports · embed · health
     middleware/               auth · rate limits · error handler
   scripts/
-    migrate.ts  seed.ts  verify-powerbi.ts
+    migrate.ts  seed.ts  verify-powerbi.ts  validate-rls.ts
   test/                       Cache/single-flight units + refresh-rotation integration
 
 frontend/
@@ -144,6 +145,31 @@ to real demand:
 The default cache is per-process. Set `REDIS_URL` before running more than one
 backend instance, or each instance will maintain its own tokens and
 user-invalidation will only reach one of them.
+
+## Detecting RLS drift
+
+Power BI role names are case-sensitive strings asserted at token time, and
+nothing validates them when a mapping row is written. Get one wrong and there is
+no error anywhere: users see an empty dashboard, or the fail-closed guard starts
+denying people who should have access — usually days after someone else
+republished the dataset.
+
+```bash
+cd backend
+npm run validate:rls            # human-readable; exits 1 on any error
+npm run validate:rls -- --json  # machine-readable, for alerting
+```
+
+Run it on a schedule. It reports five kinds of drift, of which two are errors
+you are already suffering from and one is silent data exposure:
+
+| Issue | Severity | What it means |
+|---|---|---|
+| `mapping_references_unknown_role` | error | Users relying on this mapping are being denied. Names the near-miss when only the casing differs. |
+| `rls_required_but_dataset_has_no_roles` | error | Every embed fails closed; nobody can view the report. |
+| `rls_not_required_but_dataset_has_roles` | error | **Tokens are minted with no effective identity — every row goes to every user.** |
+| `dataset_role_unmapped` | warning | A dataset role nothing maps to; usually an unfinished onboarding. |
+| `dataset_unreadable` | warning | Could not reach Power BI. Not drift — unknown. |
 
 ## Tests
 

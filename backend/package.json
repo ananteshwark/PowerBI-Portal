@@ -14,6 +14,7 @@
     "migrate": "tsx scripts/migrate.ts",
     "seed": "tsx scripts/seed.ts",
     "verify:powerbi": "tsx scripts/verify-powerbi.ts",
+    "validate:rls": "tsx scripts/validate-rls.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "node --test --import tsx test/*.test.ts"
   },
