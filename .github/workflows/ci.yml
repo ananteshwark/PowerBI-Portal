@@ -1,8 +1,11 @@
 name: CI
 
 on:
+  # Only main on push. A branch with an open PR would otherwise run the whole
+  # workflow twice for every commit — once for `push`, once for `pull_request` —
+  # doubling CI minutes and putting duplicate check runs on the PR.
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
 
 # A second push to the same branch makes the first run pointless.
@@ -131,14 +134,6 @@ jobs:
   audit:
     name: Dependency audit
     runs-on: ubuntu-latest
-    # Reports without blocking, deliberately. The baseline is not clean and
-    # cannot be cleaned from here: frontend carries 3 high advisories against
-    # sharp/libvips, reachable only through next's image optimiser, and npm's
-    # only offered fix is a major bump to next 16. This project renders no
-    # images and does not use next/image, so the exposure is theoretical — but
-    # it is a real advisory, so it stays visible rather than being suppressed.
-    # Promote to a hard gate once the baseline is clean.
-    continue-on-error: true
     strategy:
       matrix:
         workspace: [backend, frontend]
@@ -147,6 +142,48 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+
+      # This job REPORTS advisories, it does not gate on them, and it has to
+      # actually succeed to mean that. Job-level `continue-on-error` does not
+      # achieve it: the workflow goes green but the check run still reports
+      # `failure`, so the PR carries a permanently red check — which is how
+      # people learn to ignore red checks entirely.
+      #
+      # Findings go to the run summary and to a warning annotation, so they are
+      # visible without being a false alarm. Promote to a hard gate by dropping
+      # the `|| true` once the baseline is clean.
       - name: Audit ${{ matrix.workspace }}
         working-directory: ${{ matrix.workspace }}
-        run: npm audit --audit-level=high
+        run: |
+          npm audit --json > audit.json || true
+
+          node -e '
+            const a = require("./audit.json");
+            const v = (a.metadata && a.metadata.vulnerabilities) || {};
+            const ws = process.env.WORKSPACE;
+            const bad = (v.high || 0) + (v.critical || 0);
+
+            const rows = Object.entries(a.vulnerabilities || {})
+              .filter(([, x]) => ["high", "critical"].includes(x.severity))
+              .map(([name, x]) => `| \`${name}\` | ${x.severity} | ${x.isDirect ? "direct" : "transitive"} |`);
+
+            const out = [
+              `### ${ws} dependency audit`,
+              "",
+              `critical ${v.critical || 0} · high ${v.high || 0} · moderate ${v.moderate || 0} · low ${v.low || 0}`,
+              "",
+              ...(rows.length
+                ? ["| package | severity | kind |", "|---|---|---|", ...rows]
+                : ["No high or critical advisories."]),
+              "",
+            ].join("\n");
+
+            require("fs").appendFileSync(process.env.GITHUB_STEP_SUMMARY, out);
+            console.log(out);
+
+            if (bad > 0) {
+              console.log(`::warning title=${ws} advisories::${bad} high/critical advisory(ies) — see the run summary`);
+            }
+          '
+        env:
+          WORKSPACE: ${{ matrix.workspace }}

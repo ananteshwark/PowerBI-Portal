@@ -19,3 +19,6 @@ out/
 npm-debug.log*
 coverage/
 .DS_Store
+
+# CI scratch
+audit.json
