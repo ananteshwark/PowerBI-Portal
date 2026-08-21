@@ -1,0 +1,12 @@
+{
+  // Production build. Separate from tsconfig.json because that one also covers
+  // test/ and scripts/ for typechecking; compiling tests into the shipped
+  // artifact is both wasteful and a small attack surface.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "sourceMap": false,
+    "removeComments": true
+  },
+  "include": ["src/**/*.ts", "scripts/**/*.ts"],
+  "exclude": ["test/**/*.ts"]
+}

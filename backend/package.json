@@ -7,8 +7,8 @@
   "engines": { "node": ">=20" },
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "tsc -p tsconfig.json",
-    "start": "node dist/server.js",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/src/server.js",
     "migrate": "tsx scripts/migrate.ts",
     "seed": "tsx scripts/seed.ts",
     "verify:powerbi": "tsx scripts/verify-powerbi.ts",
