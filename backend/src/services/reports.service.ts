@@ -14,12 +14,18 @@ const SELECT_COLUMNS = `
     token_lifetime_minutes AS "tokenLifetimeMinutes"
 `;
 
-/** Every active report this user can reach, via role grant or direct grant. */
+/**
+ * Every active report this user can reach, via role grant or direct grant.
+ *
+ * Reads accessible_reports() rather than the user_report_access view: the view
+ * cannot take the user id as a parameter, so the planner drove from `reports`
+ * and seq-scanned the whole grant table on every dashboard load — O(total
+ * grants in the system) rather than O(this user's grants). See migration 003.
+ */
 export async function listAccessibleReports(userId: string): Promise<AccessibleReport[]> {
   const { rows } = await query<AccessibleReport>(
     `SELECT ${SELECT_COLUMNS}
-       FROM user_report_access
-      WHERE user_id = $1
+       FROM accessible_reports($1)
       ORDER BY category NULLS LAST, name`,
     [userId],
   );
@@ -30,9 +36,14 @@ export async function listAccessibleReports(userId: string): Promise<AccessibleR
  * The authorization check. Returns null when the user has no grant for the
  * report — the caller turns that into a 403.
  *
- * Deliberately reads the same `user_report_access` view as the list endpoint,
- * so the set of reports a user can see listed and the set they can embed can
- * never drift apart.
+ * Uses the view rather than accessible_reports(), because here the user id and
+ * report id are ordinary predicates that the planner pushes into index scans
+ * (0.35-0.97 ms at 40 000 grants). The function is 5x slower for this shape:
+ * PostgreSQL will not inline a RETURNS TABLE SRF, so it builds every accessible
+ * report and filters afterwards.
+ *
+ * The two definitions must agree, so reportAccess.integration.test.ts asserts
+ * they do across a matrix of grant shapes.
  */
 export async function findAccessibleReport(
   userId: string,
