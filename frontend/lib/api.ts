@@ -173,6 +173,10 @@ export const restoreSession = () =>
 
 export const fetchReports = () => apiFetch<{ reports: ReportSummary[] }>('/api/reports');
 
+/** One report's metadata. Cheaper than pulling the catalogue to read a title. */
+export const fetchReport = (slugOrId: string) =>
+  apiFetch<ReportSummary>(`/api/reports/${encodeURIComponent(slugOrId)}`);
+
 /**
  * `bypassCache` is for one situation only: Power BI told us the token we hold
  * is bad. Without it the server returns the same cached token and the client

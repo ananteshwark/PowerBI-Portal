@@ -1,5 +1,6 @@
 import { query } from '../db/pool.js';
 import type { EffectiveIdentity } from '../types/domain.js';
+import { unauthorized } from '../utils/errors.js';
 
 /**
  * Resolves the effective identity we assert to Power BI for a given
@@ -38,8 +39,9 @@ export async function resolveEffectiveIdentity(
 
   const user = userRes.rows[0];
   if (!user) {
-    // Deactivated between JWT issuance and this call.
-    throw new Error(`No active user ${userId}`);
+    // Deactivated between JWT issuance and this call. A bare Error here became
+    // a 500; this is an auth outcome, not a server fault.
+    throw unauthorized('Account is inactive');
   }
 
   return {

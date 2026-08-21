@@ -4,6 +4,7 @@ import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import pinoHttp from 'pino-http';
 import { config } from './config/env.js';
+import { AppError } from './utils/errors.js';
 import { logger } from './utils/logger.js';
 import { apiLimiter } from './middleware/rateLimit.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
@@ -47,7 +48,10 @@ export function createApp() {
         // Same-origin / server-to-server requests carry no Origin header.
         if (!origin) return cb(null, true);
         if (config.http.corsOrigins.includes(origin)) return cb(null, true);
-        cb(new Error(`Origin ${origin} is not allowed`));
+        // An AppError, not a bare Error: the latter fell through to the
+        // terminal handler as an unhandled 500 and logged every probe as if it
+        // were a server fault.
+        cb(new AppError(403, 'cors_forbidden', 'Origin not allowed'));
       },
       credentials: true, // required for the refresh-token cookie
       methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],

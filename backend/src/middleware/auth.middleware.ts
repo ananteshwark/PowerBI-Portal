@@ -1,6 +1,6 @@
 import type { Request, Response, NextFunction } from 'express';
 import { verifyAccessToken } from '../auth/jwt.js';
-import { query } from '../db/pool.js';
+import { findUserById } from '../services/users.service.js';
 import { unauthorized, forbidden } from '../utils/errors.js';
 import type { AuthenticatedUser } from '../types/domain.js';
 
@@ -34,47 +34,25 @@ export async function requireAuth(
 
     const claims = verifyAccessToken(header.slice(7).trim());
 
-    const { rows } = await query<{
-      id: string;
-      email: string;
-      display_name: string;
-      department: string | null;
-      effective_username: string;
-      is_active: boolean;
-      roles: string[] | null;
-      is_admin: boolean;
-    }>(
-      `SELECT u.id,
-              u.email::text                       AS email,
-              u.display_name,
-              u.department,
-              u.effective_username,
-              u.is_active,
-              array_remove(array_agg(r.name), NULL)          AS roles,
-              COALESCE(bool_or(r.is_admin), FALSE)           AS is_admin
-         FROM users u
-         LEFT JOIN user_roles ur ON ur.user_id = u.id
-         LEFT JOIN roles r       ON r.id = ur.role_id
-        WHERE u.id = $1
-        GROUP BY u.id`,
-      [claims.sub],
-    );
+    // Roles are re-read from the database on every request rather than trusted
+    // from the JWT, so a revoked role takes effect immediately instead of when
+    // the 15-minute token happens to expire.
+    const user = await findUserById(claims.sub);
 
-    const row = rows[0];
     // Deactivated mid-session: reject even though the JWT is still valid.
-    if (!row || !row.is_active) {
+    if (!user || !user.isActive) {
       throw unauthorized('Account is inactive');
     }
 
     req.user = {
-      id: row.id,
-      email: row.email,
-      displayName: row.display_name,
-      department: row.department,
-      effectiveUsername: row.effective_username,
-      isActive: row.is_active,
-      roles: row.roles ?? [],
-      isAdmin: row.is_admin,
+      id: user.id,
+      email: user.email,
+      displayName: user.displayName,
+      department: user.department,
+      effectiveUsername: user.effectiveUsername,
+      isActive: user.isActive,
+      roles: user.roles,
+      isAdmin: user.isAdmin,
     };
 
     next();
@@ -83,7 +61,14 @@ export async function requireAuth(
   }
 }
 
-/** Gate for /api/admin/*. Must be mounted after requireAuth. */
+/**
+ * Gate for /api/admin/*. Must be mounted after requireAuth.
+ *
+ * Not yet wired to any route — there is no admin API. Kept because the
+ * `roles.is_admin` column and the JWT `adm` claim already carry the flag, so
+ * this is the one place that decision should be made when those routes land.
+ * If admin functionality is dropped, delete this together with `is_admin`.
+ */
 export function requireAdmin(req: Request, _res: Response, next: NextFunction): void {
   if (!req.user?.isAdmin) {
     next(forbidden('Administrator access required'));

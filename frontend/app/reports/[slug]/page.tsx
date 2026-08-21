@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { RequireAuth } from '@/components/AuthProvider';
 import PortalHeader from '@/components/PortalHeader';
 import PowerBIReport from '@/components/PowerBIReport';
-import { fetchReports, type ReportSummary } from '@/lib/api';
+import { fetchReport, type ReportSummary } from '@/lib/api';
 
 export default function ReportPage({ params }: { params: Promise<{ slug: string }> }) {
   // Next.js 15: route params are a promise.
@@ -16,9 +16,9 @@ export default function ReportPage({ params }: { params: Promise<{ slug: string 
   // the backend re-authorizes there regardless of what we render here.
   useEffect(() => {
     let cancelled = false;
-    fetchReports()
-      .then(({ reports }) => {
-        if (!cancelled) setMeta(reports.find((r) => r.slug === slug) ?? null);
+    fetchReport(slug)
+      .then((report) => {
+        if (!cancelled) setMeta(report);
       })
       .catch(() => undefined);
     return () => {
