@@ -14,7 +14,7 @@ process.env.AZURE_TENANT_ID ??= '00000000-0000-0000-0000-000000000000';
 process.env.AZURE_CLIENT_ID ??= '00000000-0000-0000-0000-000000000000';
 process.env.AZURE_CLIENT_SECRET ??= 'test-secret';
 
-const { identityFingerprint, getOrCreateEmbedToken } = await import(
+const { identityFingerprint, getOrCreateEmbedToken, invalidateUser } = await import(
   '../src/services/tokenCache.js'
 );
 
@@ -134,6 +134,42 @@ describe('getOrCreateEmbedToken', () => {
     const after = await getOrCreateEmbedToken(args, factory);
     assert.equal(after.value.token, 'token-2', 'the evicted token must not come back');
     assert.equal(calls, 2, 'the replacement should now be cached');
+  });
+
+  /**
+   * REGRESSION: invalidateUser cleared the store, but a mint already in flight
+   * resolved afterwards and wrote its result — silently re-populating the cache
+   * that had just been cleared on logout or a role change, with a token derived
+   * from the identity the user held *before* the change.
+   */
+  test('a mint in flight during invalidateUser does not repopulate the cache', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let calls = 0;
+
+    const slowFactory = async () => {
+      calls += 1;
+      await gate; // still minting while invalidateUser runs
+      return makeToken('stale-identity');
+    };
+
+    const args = { userId: 'u-epoch', reportId: 'r1', fingerprint: 'fp1' };
+    const pending = getOrCreateEmbedToken(args, slowFactory);
+
+    await invalidateUser('u-epoch');
+    release();
+
+    // The in-flight caller still gets its token: it was authorized when the
+    // request began.
+    assert.equal((await pending).value.token, 'stale-identity');
+
+    // But nobody else may be served it.
+    const next = await getOrCreateEmbedToken(args, async () => {
+      calls += 1;
+      return makeToken('fresh');
+    });
+    assert.equal(next.value.token, 'fresh', 'the invalidated token must not be served again');
+    assert.equal(calls, 2);
   });
 
   test('does not cache a token that is already inside the refresh skew', async () => {
