@@ -140,16 +140,23 @@ const userPrefix = (userId: string) => `embed:${userId}:`;
 const inFlight = new Map<string, Promise<CachedEmbedToken>>();
 
 export async function getOrCreateEmbedToken(
-  args: { userId: string; reportId: string; fingerprint: string },
+  args: { userId: string; reportId: string; fingerprint: string; bypassCache?: boolean },
   factory: () => Promise<CachedEmbedToken>,
 ): Promise<{ value: CachedEmbedToken; cached: boolean }> {
   const key = keyFor(args.userId, args.reportId, args.fingerprint);
 
-  const hit = await store.get(key);
-  if (hit) return { value: hit, cached: true };
+  if (args.bypassCache) {
+    // The caller is telling us the cached token was rejected downstream, so
+    // drop it before minting — otherwise a concurrent reader keeps serving the
+    // bad value until it expires.
+    await store.deleteByPrefix(key);
+  } else {
+    const hit = await store.get(key);
+    if (hit) return { value: hit, cached: true };
 
-  const pending = inFlight.get(key);
-  if (pending) return { value: await pending, cached: true };
+    const pending = inFlight.get(key);
+    if (pending) return { value: await pending, cached: true };
+  }
 
   const promise = (async () => {
     const value = await factory();

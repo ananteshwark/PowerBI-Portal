@@ -11,6 +11,15 @@ import { recordAudit } from './audit.service.js';
 export interface EmbedRequestContext {
   ipAddress?: string | null;
   userAgent?: string | null;
+  /**
+   * Skip the cache and mint a fresh token.
+   *
+   * Set when the browser reports that Power BI rejected the token it holds.
+   * Serving the cached copy back would return the same rejected value and spin
+   * the client forever. Still rate limited, so this cannot be used to bypass
+   * the GenerateToken budget.
+   */
+  bypassCache?: boolean;
 }
 
 /**
@@ -98,7 +107,12 @@ export async function buildEmbedConfig(
 
   // ---- 4. Mint (or reuse) the embed token --------------------------------
   const { value, cached } = await getOrCreateEmbedToken(
-    { userId: user.id, reportId: report.reportId, fingerprint },
+    {
+      userId: user.id,
+      reportId: report.reportId,
+      fingerprint,
+      bypassCache: ctx.bypassCache ?? false,
+    },
     async () => {
       // embedUrl may already be in hand from the datasetId lookup above.
       const resolvedEmbedUrl =

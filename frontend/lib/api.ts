@@ -173,5 +173,12 @@ export const restoreSession = () =>
 
 export const fetchReports = () => apiFetch<{ reports: ReportSummary[] }>('/api/reports');
 
-export const fetchEmbedConfig = (slugOrId: string) =>
-  apiFetch<EmbedConfig>(`/api/embed/${encodeURIComponent(slugOrId)}`);
+/**
+ * `bypassCache` is for one situation only: Power BI told us the token we hold
+ * is bad. Without it the server returns the same cached token and the client
+ * loops. Do not set it on the routine pre-expiry refresh.
+ */
+export const fetchEmbedConfig = (slugOrId: string, opts: { bypassCache?: boolean } = {}) =>
+  apiFetch<EmbedConfig>(
+    `/api/embed/${encodeURIComponent(slugOrId)}${opts.bypassCache ? '?bypassCache=1' : ''}`,
+  );

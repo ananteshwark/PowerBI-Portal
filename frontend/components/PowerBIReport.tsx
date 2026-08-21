@@ -7,6 +7,20 @@ import { fetchEmbedConfig, ApiError, type EmbedConfig } from '@/lib/api';
 
 type Phase = 'loading' | 'embedding' | 'ready' | 'error';
 
+/**
+ * How many times we will re-fetch a token because Power BI rejected the last
+ * one, before concluding the problem is not the token.
+ */
+const MAX_SDK_RECOVERIES = 2;
+
+/**
+ * ...counted only within this window. What needs bounding is a *loop* — the
+ * same error recurring in seconds — not the session total. A dashboard left
+ * open all day can legitimately hit the expiry backstop several times hours
+ * apart, and a lifetime counter would eventually refuse to recover it.
+ */
+const SDK_RECOVERY_WINDOW_MS = 2 * 60_000;
+
 interface Props {
   /** Portal report slug or UUID — never the Power BI report id. */
   slug: string;
@@ -49,6 +63,10 @@ export default function PowerBIReport({
   const reportRef = useRef<Report | null>(null);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const retryCount = useRef(0);
+  // Recoveries triggered by Power BI itself rejecting the token, as opposed to
+  // our own scheduled refresh. Counted within a sliding window, see below.
+  const sdkRecoveries = useRef(0);
+  const lastSdkRecoveryAt = useRef(0);
   const mounted = useRef(true);
 
   useEffect(() => {
@@ -61,9 +79,9 @@ export default function PowerBIReport({
 
   // ---------------------------------------------------------------- fetch --
   const loadToken = useCallback(
-    async (isRefresh: boolean) => {
+    async (isRefresh: boolean, opts: { bypassCache?: boolean } = {}) => {
       try {
-        const next = await fetchEmbedConfig(slug);
+        const next = await fetchEmbedConfig(slug, opts);
         if (!mounted.current) return;
 
         retryCount.current = 0;
@@ -166,6 +184,7 @@ export default function PowerBIReport({
           'loaded',
           () => {
             // 'loaded' = metadata in; visuals may still be rendering.
+            sdkRecoveries.current = 0;
             if (mounted.current) setPhase('ready');
           },
         ],
@@ -179,9 +198,26 @@ export default function PowerBIReport({
 
             // Backstop for the case where our proactive refresh did not land in
             // time (laptop asleep, tab throttled by the browser).
+            //
+            // Bounded, because a 403 here does not always mean "stale token" —
+            // a paused capacity or a deleted report reports the same way, and
+            // an unbounded recover-and-retry loop would hammer the API at
+            // network speed until the server-side limiter cut it off.
             if (detail?.message === 'TokenExpired' || detail?.errorCode === '403') {
-              void loadToken(true);
-              return;
+              const now = Date.now();
+              // Outside the window this is a fresh incident, not a loop.
+              if (now - lastSdkRecoveryAt.current > SDK_RECOVERY_WINDOW_MS) {
+                sdkRecoveries.current = 0;
+              }
+              if (sdkRecoveries.current < MAX_SDK_RECOVERIES) {
+                sdkRecoveries.current += 1;
+                lastSdkRecoveryAt.current = now;
+                void loadToken(true, { bypassCache: true });
+                return;
+              }
+              // Still failing after repeated fresh tokens, so the token is not
+              // the problem — a paused capacity or a deleted report looks like
+              // this. Fall through and surface it.
             }
 
             if (mounted.current) {
@@ -205,7 +241,17 @@ export default function PowerBIReport({
     setPhase('loading');
     setError(null);
     retryCount.current = 0;
-    void loadToken(false);
+    sdkRecoveries.current = 0;
+    lastSdkRecoveryAt.current = 0;
+    // Clear the config first. The token is deliberately excluded from the
+    // embedConfig memo deps (see note 1), so without this the deps are
+    // unchanged, useMemo hands back its cached object, and we re-embed with the
+    // very token that just failed.
+    setConfig(null);
+    reportRef.current = null;
+    // Power BI rejected what we had, so ask for a genuinely new token rather
+    // than whatever is sitting in the server-side cache.
+    void loadToken(false, { bypassCache: true });
   };
 
   // ------------------------------------------------------------- rendering --

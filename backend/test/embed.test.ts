@@ -101,6 +101,41 @@ describe('getOrCreateEmbedToken', () => {
     assert.equal(calls, 2, 'a changed RLS identity must force a new token');
   });
 
+  /**
+   * REGRESSION: when Power BI rejects the token the browser holds, re-serving
+   * the cached copy hands back the same rejected value. The client then errors
+   * again, asks again, and loops. bypassCache must evict, not just skip the
+   * read — otherwise a concurrent reader keeps serving the bad token until it
+   * expires.
+   */
+  test('bypassCache mints a new token and evicts the bad one', async () => {
+    let calls = 0;
+    const factory = async () => {
+      calls += 1;
+      return makeToken(`token-${calls}`);
+    };
+
+    const args = { userId: 'u-bypass', reportId: 'r1', fingerprint: 'fp1' };
+
+    const first = await getOrCreateEmbedToken(args, factory);
+    assert.equal(first.value.token, 'token-1');
+
+    // Normal read still hits the cache.
+    assert.equal((await getOrCreateEmbedToken(args, factory)).cached, true);
+    assert.equal(calls, 1);
+
+    // Power BI rejected token-1: force a fresh mint.
+    const forced = await getOrCreateEmbedToken({ ...args, bypassCache: true }, factory);
+    assert.equal(forced.value.token, 'token-2');
+    assert.equal(forced.cached, false);
+    assert.equal(calls, 2);
+
+    // The bad token must be gone, not lingering for the next reader.
+    const after = await getOrCreateEmbedToken(args, factory);
+    assert.equal(after.value.token, 'token-2', 'the evicted token must not come back');
+    assert.equal(calls, 2, 'the replacement should now be cached');
+  });
+
   test('does not cache a token that is already inside the refresh skew', async () => {
     let calls = 0;
     const factory = async () => {

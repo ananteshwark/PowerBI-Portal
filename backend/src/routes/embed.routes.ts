@@ -38,6 +38,9 @@ embedRouter.get(
       const embedConfig = await buildEmbedConfig(req.user!, reportIdOrSlug, {
         ipAddress: req.ip,
         userAgent: req.get('user-agent') ?? null,
+        // The client sets this only after Power BI has rejected the token it
+        // holds; re-serving the cached copy would hand back the same bad value.
+        bypassCache: req.query.bypassCache === '1',
       });
 
       res.set('Cache-Control', 'no-store, private');
