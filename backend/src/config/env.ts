@@ -42,6 +42,13 @@ const schema = z.object({
   REDIS_URL: z.string().url().optional(),
 
   // ---- CORS / cookies -----------------------------------------------------
+  // How many proxy hops to trust for req.ip, which both rate limiters and the
+  // audit log depend on. 'false' (the default) is the only safe value when the
+  // app is reachable directly: any other setting lets a client forge
+  // X-Forwarded-For. Set to the hop count ('1' behind a single ALB/nginx), a
+  // CIDR, or 'true' only when something upstream always overwrites the header.
+  TRUST_PROXY: z.string().default('false'),
+
   CORS_ORIGINS: z.string().default('http://localhost:3000'),
   COOKIE_DOMAIN: z.string().optional(),
   COOKIE_SECURE: z.enum(['true', 'false']).default('false'),
@@ -99,6 +106,7 @@ export const config = {
   },
 
   http: {
+    trustProxy: raw.TRUST_PROXY,
     corsOrigins: raw.CORS_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean),
     cookieDomain: raw.COOKIE_DOMAIN,
     cookieSecure: raw.COOKIE_SECURE === 'true',

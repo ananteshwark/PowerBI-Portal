@@ -10,7 +10,7 @@ import {
   revokeRefreshToken,
 } from '../auth/refreshTokens.js';
 import { unauthorized } from '../utils/errors.js';
-import { loginLimiter } from '../middleware/rateLimit.js';
+import { loginAccountLimiter, loginIpLimiter, refreshLimiter } from '../middleware/rateLimit.js';
 import { requireAuth } from '../middleware/auth.middleware.js';
 import { recordAudit } from '../services/audit.service.js';
 import { invalidateUser } from '../services/tokenCache.js';
@@ -75,7 +75,8 @@ const clientMeta = (req: Request) => ({
 // ------------------------------------------------------------------ login --
 authRouter.post(
   '/login',
-  loginLimiter,
+  loginIpLimiter,
+  loginAccountLimiter,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { email, password } = loginSchema.parse(req.body);
@@ -135,7 +136,7 @@ authRouter.post(
 );
 
 // ---------------------------------------------------------------- refresh --
-authRouter.post('/refresh', async (req: Request, res: Response, next: NextFunction) => {
+authRouter.post('/refresh', refreshLimiter, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const presented = req.cookies?.[REFRESH_COOKIE] as string | undefined;
     if (!presented) throw unauthorized('No refresh token');

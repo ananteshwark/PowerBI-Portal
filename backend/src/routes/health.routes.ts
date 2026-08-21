@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 import { query } from '../db/pool.js';
-import { getAadToken, remainingMinutes } from '../powerbi/aadToken.js';
+import { getAadToken } from '../powerbi/aadToken.js';
 import { logger } from '../utils/logger.js';
 
 export const healthRouter = Router();
@@ -16,21 +16,27 @@ healthRouter.get('/live', (_req: Request, res: Response) => {
  * which is what makes it safe to expose to a load balancer's probe.
  */
 healthRouter.get('/ready', async (_req: Request, res: Response) => {
-  const checks: Record<string, { ok: boolean; detail?: string }> = {};
+  // Deliberately no `detail` field: this endpoint is unauthenticated, so it
+  // reports liveness of each dependency and nothing about why one is down.
+  const checks: Record<string, { ok: boolean }> = {};
 
   try {
     await query('SELECT 1');
     checks.database = { ok: true };
   } catch (err) {
-    checks.database = { ok: false, detail: (err as Error).message };
+    // The driver's message carries the database host, port and sometimes the
+    // role name. This endpoint is anonymous, so the detail goes to the log and
+    // only the boolean goes to the caller.
+    logger.error({ err }, 'Readiness: database check failed');
+    checks.database = { ok: false };
   }
 
   try {
-    const token = await getAadToken();
-    checks.entraId = { ok: true, detail: `token valid for ${remainingMinutes(token)}m` };
+    await getAadToken();
+    checks.entraId = { ok: true };
   } catch (err) {
     logger.error({ err }, 'Readiness: Entra ID check failed');
-    checks.entraId = { ok: false, detail: 'token acquisition failed' };
+    checks.entraId = { ok: false };
   }
 
   const ok = Object.values(checks).every((c) => c.ok);

@@ -12,12 +12,22 @@ import { reportsRouter } from './routes/reports.routes.js';
 import { embedRouter } from './routes/embed.routes.js';
 import { healthRouter } from './routes/health.routes.js';
 
+/** 'false' | 'true' | hop count | comma-separated CIDR list. */
+function parseTrustProxy(value: string): boolean | number | string[] {
+  if (value === 'false') return false;
+  if (value === 'true') return true;
+  if (/^\d+$/.test(value)) return Number(value);
+  return value.split(',').map((s) => s.trim()).filter(Boolean);
+}
+
 export function createApp() {
   const app = express();
 
-  // Behind a load balancer / ingress. Required for req.ip (rate limiting,
-  // audit) to reflect the real client rather than the proxy.
-  app.set('trust proxy', 1);
+  // req.ip drives both rate limiters and audit_log.ip_address, so getting this
+  // wrong is a security setting, not a cosmetic one. Trusting a hop that is not
+  // actually there lets any client forge X-Forwarded-For and rotate past the
+  // limiters. Defaults to false; set TRUST_PROXY to match the real topology.
+  app.set('trust proxy', parseTrustProxy(config.http.trustProxy));
   app.disable('x-powered-by');
 
   app.use(

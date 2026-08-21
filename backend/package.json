@@ -4,7 +4,9 @@
   "private": true,
   "description": "App Owns Data Power BI Embedded backend with RLS",
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.build.json",
