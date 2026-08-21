@@ -11,6 +11,7 @@ import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { authRouter } from './routes/auth.routes.js';
 import { reportsRouter } from './routes/reports.routes.js';
 import { embedRouter } from './routes/embed.routes.js';
+import { adminRouter } from './routes/admin.routes.js';
 import { healthRouter } from './routes/health.routes.js';
 
 /** 'false' | 'true' | hop count | comma-separated CIDR list. */
@@ -77,6 +78,7 @@ export function createApp() {
   app.use('/api/auth', authRouter);
   app.use('/api/reports', reportsRouter);
   app.use('/api/embed', embedRouter);
+  app.use('/api/admin', adminRouter);
 
   app.use(notFoundHandler);
   app.use(errorHandler);

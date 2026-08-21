@@ -9,7 +9,16 @@ export type AuditAction =
   | 'embed_token_issued'
   | 'embed_token_served_from_cache'
   | 'access_denied'
-  | 'rls_resolution_failed';
+  | 'rls_resolution_failed'
+  // Administrative mutations. Kept distinct from the access-decision actions
+  // above so "who changed permissions" and "who was denied" stay separable in
+  // the audit trail.
+  | 'admin_user_created'
+  | 'admin_user_updated'
+  | 'admin_user_roles_replaced'
+  | 'admin_report_access_replaced'
+  | 'admin_rls_mapping_created'
+  | 'admin_rls_mapping_deleted';
 
 export interface AuditEntry {
   userId?: string | null;

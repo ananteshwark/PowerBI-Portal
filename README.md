@@ -80,11 +80,12 @@ backend/
     services/
       embed.service.ts        ⭐ Authorization → identity resolution → fail-closed → mint
       rlsValidator.service.ts Detects RLS mapping drift (the silent failure mode)
+      admin.service.ts        Admin mutations; invalidates caches on every access change
       identity.service.ts     Portal role → Power BI RLS role, per dataset
       reports.service.ts      Report catalogue and the access check
       tokenCache.ts           Embed-token cache, single-flight, identity-keyed
       audit.service.ts        Who saw what, under which identity
-    routes/                   auth · reports · embed · health
+    routes/                   auth · reports · embed · admin · health
     middleware/               auth · rate limits · error handler
   scripts/
     migrate.ts  seed.ts  verify-powerbi.ts  validate-rls.ts
@@ -113,6 +114,29 @@ frontend/
 | `GET` | `/api/reports` | Bearer | Report catalogue for this user (metadata only) |
 | `GET` | `/api/embed/:slugOrId` | Bearer | **Embed token + URL, RLS applied** |
 | `GET` | `/api/health/live` `/ready` | — | Liveness / readiness (readiness checks DB + Entra ID) |
+
+### Admin API
+
+Every route requires an admin role, checked against the database rather than the
+JWT. **Every mutation that changes access invalidates the affected users' cached
+embed tokens and revokes their sessions** — without that, a demoted user keeps a
+working Power BI credential for up to an hour.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/admin/users` | All users with their roles |
+| `POST` | `/api/admin/users` | Create a user (optionally with roles) |
+| `PATCH` | `/api/admin/users/:id` | Update name, department, effective username, active state |
+| `PUT` | `/api/admin/users/:id/roles` | Replace a user's role set |
+| `GET` | `/api/admin/roles` | Roles and how many users hold each |
+| `GET` | `/api/admin/reports` | All reports, including inactive, with their grants |
+| `PUT` | `/api/admin/reports/:id/access` | Replace which roles may see a report |
+| `GET` `POST` | `/api/admin/rls-mappings` | List / create portal-role → Power BI-role mappings |
+| `DELETE` | `/api/admin/rls-mappings/:id` | Remove a mapping |
+| `GET` | `/api/admin/rls-validation` | Run the drift check (same result as the CLI) |
+
+Two self-lockout guards: an admin cannot deactivate their own account, and
+cannot remove their own administrator role.
 
 ## Security properties
 
