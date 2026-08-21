@@ -95,6 +95,14 @@ describe('refresh token rotation', { skip: TEST_DB ? false : 'TEST_DATABASE_URL 
 
     assert.equal(await liveTokensInFamily(familyId), 1, 'precondition: one live token');
 
+    // Backdate past the reuse leeway rather than sleeping, so this reads as a
+    // genuine replay and not as a concurrent second tab (covered separately).
+    await query(
+      `UPDATE refresh_tokens SET revoked_at = now() - INTERVAL '60 seconds'
+        WHERE family_id = $1 AND revoked_at IS NOT NULL`,
+      [familyId],
+    );
+
     // Attacker replays the original.
     await assert.rejects(
       () => rotateRefreshToken(original, {}),
@@ -112,6 +120,70 @@ describe('refresh token rotation', { skip: TEST_DB ? false : 'TEST_DATABASE_URL 
       await liveTokensInFamily(familyId),
       0,
       'no token in a compromised family may remain live',
+    );
+  });
+
+  /**
+   * REGRESSION: two tabs loading at the same moment both presented the same
+   * cookie. The second looked like a replay, tripped theft detection, and
+   * revoked the family — signing the user out of BOTH tabs, including the one
+   * whose rotation had just succeeded.
+   */
+  test('a concurrent refresh from a second tab does not sign anyone out', async () => {
+    const original = await issueRefreshToken({ userId });
+    const familyId = await newestFamilyId();
+
+    // Both tabs present the same cookie at once.
+    const [tabA, tabB] = await Promise.all([
+      rotateRefreshToken(original, {}),
+      rotateRefreshToken(original, {}),
+    ]);
+
+    assert.notEqual(tabA.token, tabB.token, 'each tab gets its own token');
+
+    // Both successors must still work.
+    await assert.doesNotReject(() => rotateRefreshToken(tabA.token, {}));
+    await assert.doesNotReject(() => rotateRefreshToken(tabB.token, {}));
+
+    const { rows } = await query<{ live: string }>(
+      `SELECT count(*)::text AS live FROM refresh_tokens
+        WHERE family_id = $1 AND revoked_at IS NULL`,
+      [familyId],
+    );
+    assert.equal(rows[0]?.live, '2', 'both tabs should still hold a live token');
+  });
+
+  /**
+   * The leeway must never resurrect a family we have already condemned. Right
+   * after a bulk revocation every token is *freshly* revoked, so a leeway keyed
+   * only on "how long ago was this revoked" would hand the attacker a live
+   * token inside the dead family. `compromised_at` is what prevents that.
+   */
+  test('a condemned family stays dead even inside the leeway window', async () => {
+    const original = await issueRefreshToken({ userId });
+    const familyId = await newestFamilyId();
+    const { token: current } = await rotateRefreshToken(original, {});
+
+    await query(
+      `UPDATE refresh_tokens SET revoked_at = now() - INTERVAL '60 seconds'
+        WHERE family_id = $1 AND revoked_at IS NOT NULL`,
+      [familyId],
+    );
+    await assert.rejects(() => rotateRefreshToken(original, {}));   // condemns the family
+
+    const { rows } = await query<{ n: string }>(
+      `SELECT count(*)::text AS n FROM refresh_tokens
+        WHERE family_id = $1 AND compromised_at IS NOT NULL`,
+      [familyId],
+    );
+    assert.equal(rows[0]?.n, '2', 'every row in the family must be flagged compromised');
+
+    // `current` was revoked microseconds ago by that response — squarely inside
+    // the leeway — and must still be refused.
+    await assert.rejects(
+      () => rotateRefreshToken(current, {}),
+      (err: { status?: number }) => err.status === 401,
+      'leeway must not renew a token in a condemned family',
     );
   });
 

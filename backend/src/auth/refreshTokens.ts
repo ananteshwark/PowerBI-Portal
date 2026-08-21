@@ -14,6 +14,20 @@ import { unauthorized } from '../utils/errors.js';
  * is long-lived.
  */
 
+/**
+ * How long a just-rotated token stays acceptable.
+ *
+ * Without this, two browser tabs opening at once both present the same cookie;
+ * the second one looks exactly like a replay, and strict reuse detection
+ * revokes the family — signing the user out of both tabs, including the one
+ * that had just succeeded. That is a routine, self-inflicted logout.
+ *
+ * The window is long enough to cover a slow round-trip and far too short to be
+ * useful to an attacker, who would have to replay within seconds of the
+ * legitimate rotation. Auth0 ships the same mechanism (its "reuse interval").
+ */
+const REUSE_LEEWAY_MS = 15_000;
+
 const hash = (token: string) =>
   crypto.createHash('sha256').update(token).digest('hex');
 
@@ -70,8 +84,10 @@ export async function rotateRefreshToken(
         family_id: string;
         expires_at: Date;
         revoked_at: Date | null;
+        replaced_by: string | null;
+        compromised_at: Date | null;
       }>(
-        `SELECT id, user_id, family_id, expires_at, revoked_at
+        `SELECT id, user_id, family_id, expires_at, revoked_at, replaced_by, compromised_at
            FROM refresh_tokens
           WHERE token_hash = $1
           FOR UPDATE`,
@@ -81,12 +97,38 @@ export async function rotateRefreshToken(
       const row = rows[0];
       if (!row) throw unauthorized('Invalid refresh token');
 
-      if (row.revoked_at) {
-        // Replay of an already-rotated token => assume the value was stolen.
-        // Flag the family; the revocation happens in the finally block, outside
-        // this transaction, so it survives the rollback.
-        compromisedFamily = { familyId: row.family_id, userId: row.user_id };
+      // A family we have already condemned is never renewable — no leeway, no
+      // exceptions. Checked first so the concurrency path below cannot
+      // resurrect a token inside a family that was just killed.
+      if (row.compromised_at) {
         throw unauthorized('Refresh token has already been used');
+      }
+
+      if (row.revoked_at) {
+        const sinceRotation = Date.now() - row.revoked_at.getTime();
+
+        // `replaced_by` is the discriminator: a token revoked BY ROTATION points
+        // at its successor, whereas one revoked in a bulk security response does
+        // not. Only the former can be a concurrent second tab.
+        const revokedByRotation = row.replaced_by !== null;
+
+        if (!revokedByRotation || sinceRotation > REUSE_LEEWAY_MS) {
+          // A genuinely old token, or one revoked by something other than its
+          // own rotation, came back. Assume the value was stolen and flag the
+          // family; the revocation happens in the finally block, outside this
+          // transaction, so it survives the rollback.
+          compromisedFamily = { familyId: row.family_id, userId: row.user_id };
+          throw unauthorized('Refresh token has already been used');
+        }
+
+        // Inside the leeway: this is almost certainly a second tab that loaded
+        // with the same cookie a few milliseconds behind the first, not a
+        // replay. Fall through and mint a sibling in the same family. The
+        // presented token stays revoked either way.
+        logger.debug(
+          { userId: row.user_id, sinceRotation },
+          'Refresh presented within reuse leeway — treating as concurrent, not theft',
+        );
       }
 
       if (row.expires_at.getTime() <= Date.now()) {
@@ -103,8 +145,13 @@ export async function rotateRefreshToken(
         [row.user_id, hash(successor), row.family_id, expiresAt, ctx.userAgent ?? null, ctx.ipAddress ?? null],
       );
 
+      // `AND revoked_at IS NULL` matters for the leeway path above: that row is
+      // already revoked and already points at its first successor. Re-stamping
+      // would rewrite the rotation chain and lose the original ordering.
       await client.query(
-        `UPDATE refresh_tokens SET revoked_at = now(), replaced_by = $2 WHERE id = $1`,
+        `UPDATE refresh_tokens
+            SET revoked_at = now(), replaced_by = $2
+          WHERE id = $1 AND revoked_at IS NULL`,
         [row.id, inserted.rows[0]!.id],
       );
 
@@ -116,8 +163,9 @@ export async function rotateRefreshToken(
       // Fresh connection from the pool — the transaction above has ended.
       await query(
         `UPDATE refresh_tokens
-            SET revoked_at = now()
-          WHERE family_id = $1 AND revoked_at IS NULL`,
+            SET revoked_at = COALESCE(revoked_at, now()),
+                compromised_at = now()
+          WHERE family_id = $1 AND compromised_at IS NULL`,
         [familyId],
       ).then(
         ({ rowCount }) =>

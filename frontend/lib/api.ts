@@ -41,19 +41,40 @@ export class ApiError extends Error {
  */
 let refreshPromise: Promise<boolean> | null = null;
 
+async function doRefresh(): Promise<boolean> {
+  try {
+    const res = await fetch(`${API_ORIGIN}/api/auth/refresh`, {
+      method: 'POST',
+      credentials: 'include', // sends the HttpOnly refresh cookie
+    });
+    if (!res.ok) return false;
+    const data = (await res.json()) as { accessToken: string };
+    accessToken = data.accessToken;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The in-page promise above only dedupes within one document. Two tabs still
+ * race, and the loser presents a cookie the winner has already rotated. The
+ * server now tolerates that (see REUSE_LEEWAY_MS), but taking a cross-tab lock
+ * means the second tab usually does not make the redundant call at all.
+ *
+ * Web Locks is unavailable on older Safari and in non-secure contexts, so this
+ * is an optimisation layered on top of the server-side fix, never the fix
+ * itself.
+ */
+async function withCrossTabLock<T>(fn: () => Promise<T>): Promise<T> {
+  if (typeof navigator === 'undefined' || !navigator.locks) return fn();
+  return navigator.locks.request('pbp-token-refresh', fn) as Promise<T>;
+}
+
 async function refreshAccessToken(): Promise<boolean> {
   refreshPromise ??= (async () => {
     try {
-      const res = await fetch(`${API_ORIGIN}/api/auth/refresh`, {
-        method: 'POST',
-        credentials: 'include', // sends the HttpOnly refresh cookie
-      });
-      if (!res.ok) return false;
-      const data = (await res.json()) as { accessToken: string };
-      accessToken = data.accessToken;
-      return true;
-    } catch {
-      return false;
+      return await withCrossTabLock(doRefresh);
     } finally {
       refreshPromise = null;
     }
