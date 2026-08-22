@@ -91,18 +91,46 @@ jobs:
           PORT: 4599
           LOG_LEVEL: warn
         run: |
+          set -u
+          PORT=4599
+
+          # Resolve whoever is listening, rather than tracking npm's children.
+          # `npm start` launches the server as a GRANDCHILD, so killing the
+          # wrapper — or even its direct child — leaves the real process alive
+          # and holding the port. Going by port is independent of how deep npm
+          # nests things, and unlike a pkill pattern it cannot match this script.
+          listener() {
+            if command -v fuser >/dev/null 2>&1; then
+              fuser -n tcp "$PORT" 2>/dev/null | tr -d ' '
+            else
+              ss -lptnH "sport = :$PORT" 2>/dev/null | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2
+            fi
+          }
+
+          stop_server() {
+            PID="$(listener)"
+            [ -n "$PID" ] && kill "$PID" 2>/dev/null || true
+            # SIGTERM begins a graceful drain — correct in production, pointless
+            # here, and long enough that the process would outlive this step and
+            # be reaped as an orphan.
+            for _ in $(seq 1 5); do [ -z "$(listener)" ] && break; sleep 1; done
+            PID="$(listener)"
+            [ -n "$PID" ] && kill -9 "$PID" 2>/dev/null || true
+          }
+
           npm start &
-          SERVER_PID=$!
-          for i in $(seq 1 30); do
-            if curl -fsS "http://127.0.0.1:4599/api/health/live" >/dev/null 2>&1; then
+
+          for _ in $(seq 1 30); do
+            if curl -fsS -H 'Connection: close' "http://127.0.0.1:$PORT/api/health/live" >/dev/null 2>&1; then
               echo "compiled server is serving"
-              kill $SERVER_PID
+              stop_server
               exit 0
             fi
             sleep 1
           done
+
           echo "::error::compiled server did not serve /api/health/live within 30s"
-          kill $SERVER_PID 2>/dev/null
+          stop_server
           exit 1
 
   frontend:
