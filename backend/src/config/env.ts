@@ -16,6 +16,34 @@ const schema = z.object({
   DATABASE_POOL_MAX: z.coerce.number().int().positive().default(10),
   DATABASE_SSL: z.enum(['true', 'false']).default('false'),
 
+  // ---- Identity provider --------------------------------------------------
+  // 'local'  — email + password against the users table
+  // 'entra'  — Microsoft Entra ID via OIDC authorization code + PKCE
+  // 'both'   — either; useful while migrating, and for break-glass admin access
+  //            if the IdP is unreachable.
+  AUTH_PROVIDER: z.enum(['local', 'entra', 'both']).default('local'),
+
+  // ---- Entra ID OIDC (only required when AUTH_PROVIDER includes entra) ----
+  // A SEPARATE app registration from the Power BI service principal. That one
+  // is a confidential client acting as itself; this one signs users in. Sharing
+  // one registration would give the sign-in app the service principal's Power BI
+  // access.
+  ENTRA_OIDC_TENANT_ID: z.string().min(1).optional(),
+  ENTRA_OIDC_CLIENT_ID: z.string().uuid().optional(),
+  ENTRA_OIDC_CLIENT_SECRET: z.string().min(1).optional(),
+  ENTRA_OIDC_REDIRECT_URI: z.string().url().optional(),
+  // Where to send the browser after a successful sign-in.
+  ENTRA_POST_LOGIN_REDIRECT: z.string().url().default('http://localhost:3000/dashboard'),
+  // Override the discovery document. Exists so tests can point at a stub
+  // issuer; in production leave it unset and it is derived from the tenant.
+  ENTRA_OIDC_DISCOVERY_URL: z.string().url().optional(),
+  // Create a portal user on first successful sign-in. Off by default: with it
+  // on, anyone in the tenant gets an account (with no roles, so no reports).
+  ENTRA_AUTO_PROVISION: z.enum(['true', 'false']).default('false'),
+  // Link an Entra identity to an EXISTING local account matching on email.
+  // Off by default and deliberately so — see entraUsers.service.ts.
+  ENTRA_LINK_BY_EMAIL: z.enum(['true', 'false']).default('false'),
+
   // ---- Portal auth (JWT) --------------------------------------------------
   // Must be >=32 bytes of entropy. Generate: openssl rand -base64 48
   JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
@@ -54,7 +82,32 @@ const schema = z.object({
   COOKIE_SECURE: z.enum(['true', 'false']).default('false'),
 });
 
-const parsed = schema.safeParse(process.env);
+/**
+ * Entra settings are conditionally required: demanding them when AUTH_PROVIDER
+ * is 'local' would force every deployment to carry OIDC config it never uses,
+ * while accepting a half-configured 'entra' deployment would fail at the first
+ * sign-in attempt instead of at boot.
+ */
+const withEntraChecks = schema.superRefine((cfg, ctx) => {
+  if (cfg.AUTH_PROVIDER === 'local') return;
+
+  for (const key of [
+    'ENTRA_OIDC_TENANT_ID',
+    'ENTRA_OIDC_CLIENT_ID',
+    'ENTRA_OIDC_CLIENT_SECRET',
+    'ENTRA_OIDC_REDIRECT_URI',
+  ] as const) {
+    if (!cfg[key]) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [key],
+        message: `required when AUTH_PROVIDER is "${cfg.AUTH_PROVIDER}"`,
+      });
+    }
+  }
+});
+
+const parsed = withEntraChecks.safeParse(process.env);
 
 if (!parsed.success) {
   const issues = parsed.error.issues
@@ -85,6 +138,25 @@ export const config = {
     audience: raw.JWT_AUDIENCE,
     accessTtlSeconds: raw.ACCESS_TOKEN_TTL_SECONDS,
     refreshTtlSeconds: raw.REFRESH_TOKEN_TTL_SECONDS,
+  },
+
+  auth: {
+    provider: raw.AUTH_PROVIDER,
+    localEnabled: raw.AUTH_PROVIDER !== 'entra',
+    entraEnabled: raw.AUTH_PROVIDER !== 'local',
+  },
+
+  entra: {
+    tenantId: raw.ENTRA_OIDC_TENANT_ID ?? '',
+    clientId: raw.ENTRA_OIDC_CLIENT_ID ?? '',
+    clientSecret: raw.ENTRA_OIDC_CLIENT_SECRET ?? '',
+    redirectUri: raw.ENTRA_OIDC_REDIRECT_URI ?? '',
+    postLoginRedirect: raw.ENTRA_POST_LOGIN_REDIRECT,
+    discoveryUrl:
+      raw.ENTRA_OIDC_DISCOVERY_URL ??
+      `https://login.microsoftonline.com/${raw.ENTRA_OIDC_TENANT_ID}/v2.0/.well-known/openid-configuration`,
+    autoProvision: raw.ENTRA_AUTO_PROVISION === 'true',
+    linkByEmail: raw.ENTRA_LINK_BY_EMAIL === 'true',
   },
 
   azure: {

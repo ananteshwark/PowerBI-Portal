@@ -10,7 +10,7 @@ import {
   rotateRefreshToken,
   revokeRefreshToken,
 } from '../auth/refreshTokens.js';
-import { unauthorized } from '../utils/errors.js';
+import { unauthorized, forbidden } from '../utils/errors.js';
 import { loginAccountLimiter, loginIpLimiter, refreshLimiter } from '../middleware/rateLimit.js';
 import { requireAuth } from '../middleware/auth.middleware.js';
 import { recordAudit } from '../services/audit.service.js';
@@ -51,6 +51,12 @@ authRouter.post(
   loginAccountLimiter,
   async (req: Request, res: Response, next: NextFunction) => {
     try {
+      // With AUTH_PROVIDER=entra the password path is closed entirely, so a
+      // legacy password hash left in the table cannot be used to bypass SSO.
+      if (!config.auth.localEnabled) {
+        throw forbidden('Password sign-in is disabled; use Entra ID');
+      }
+
       const { email, password } = loginSchema.parse(req.body);
       const user = await findUserByEmail(email);
 

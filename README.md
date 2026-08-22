@@ -111,6 +111,8 @@ frontend/
 | `POST` | `/api/auth/refresh` | cookie | Rotate the refresh token, issue a new access token |
 | `POST` | `/api/auth/logout` | cookie | Revoke the token family and drop cached embed tokens |
 | `GET` | `/api/auth/me` | Bearer | Current user and roles |
+| `GET` | `/api/auth/entra/login` | — | Start Entra ID sign-in (redirects to Microsoft) |
+| `GET` | `/api/auth/entra/callback` | — | OIDC callback; sets the refresh cookie and redirects |
 | `GET` | `/api/reports` | Bearer | Report catalogue for this user (metadata only) |
 | `GET` | `/api/embed/:slugOrId` | Bearer | **Embed token + URL, RLS applied** |
 | `GET` | `/api/health/live` `/ready` | — | Liveness / readiness (readiness checks DB + Entra ID) |
@@ -169,6 +171,30 @@ to real demand:
 The default cache is per-process. Set `REDIS_URL` before running more than one
 backend instance, or each instance will maintain its own tokens and
 user-invalidation will only reach one of them.
+
+## Sign-in
+
+`AUTH_PROVIDER` selects the identity source: `local` (email + password),
+`entra` (Microsoft Entra ID via OIDC), or `both`. With `entra`, the password
+endpoint returns 403, so a legacy hash left in the table cannot bypass SSO;
+with `local`, the SSO routes return 404.
+
+The Entra flow is authorization code + **PKCE (S256)**, with `state` for CSRF
+and `nonce` bound into the ID token. ID tokens are verified against the tenant's
+JWKS with the algorithm pinned to RS256, and `iss`, `aud`, `tid` and `exp` all
+checked. It uses a **separate app registration** from the Power BI service
+principal — sharing one would hand the sign-in path the service principal's
+Power BI access — and requests only `openid profile email`, so a stolen
+authorization code buys identity and nothing more.
+
+**Accounts are matched on the immutable `oid` claim, never on email.** The
+`email` claim is not proof of ownership: in many tenants it is self-service
+editable, so matching on it would let anyone who can set their own directory
+email take over a portal account, its roles and its RLS identity.
+`ENTRA_LINK_BY_EMAIL` exists for one-time migrations, is off by default, and
+refuses to relink an account already bound to a different identity.
+`ENTRA_AUTO_PROVISION` creates accounts on first sign-in — with **no roles**,
+because provisioning must never imply authorization.
 
 ## Detecting RLS drift
 

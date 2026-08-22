@@ -9,6 +9,7 @@ import { logger } from './utils/logger.js';
 import { apiLimiter } from './middleware/rateLimit.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { authRouter } from './routes/auth.routes.js';
+import { entraAuthRouter } from './routes/authEntra.routes.js';
 import { reportsRouter } from './routes/reports.routes.js';
 import { embedRouter } from './routes/embed.routes.js';
 import { adminRouter } from './routes/admin.routes.js';
@@ -75,6 +76,8 @@ export function createApp() {
 
   app.use('/api/health', healthRouter);
   app.use('/api', apiLimiter);
+  // Mounted before authRouter so /api/auth/entra/* is not shadowed.
+  app.use('/api/auth/entra', entraAuthRouter);
   app.use('/api/auth', authRouter);
   app.use('/api/reports', reportsRouter);
   app.use('/api/embed', embedRouter);
