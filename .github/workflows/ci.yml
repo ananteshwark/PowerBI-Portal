@@ -55,9 +55,9 @@ jobs:
         working-directory: backend
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: npm
@@ -142,9 +142,9 @@ jobs:
         working-directory: frontend
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: npm
@@ -166,10 +166,16 @@ jobs:
       matrix:
         workspace: [backend, frontend]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
+          # setup-node v5+ turns package-manager caching on by itself when no
+          # `cache` input is given. There is no lockfile at the repository root
+          # — backend/ and frontend/ each hold their own — and this job only
+          # reads the audit endpoint, so there is nothing worth caching. Off,
+          # explicitly, rather than relying on detection finding nothing.
+          package-manager-cache: false
 
       # This job REPORTS advisories, it does not gate on them, and it has to
       # actually succeed to mean that. Job-level `continue-on-error` does not
