@@ -6,7 +6,7 @@ authenticates to Power BI; the backend maps each portal user to an *effective
 identity* and requests an embed token with that identity attached, so Power BI
 applies the dataset's RLS filters per user.
 
-**Stack:** Next.js 15 + `powerbi-client-react` · Node.js/Express + TypeScript ·
+**Stack:** Next.js 16 + `powerbi-client-react` · Node.js/Express + TypeScript ·
 PostgreSQL · JWT auth (Entra ID OIDC pluggable) · Microsoft Entra ID service
 principal.
 
