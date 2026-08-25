@@ -1,0 +1,223 @@
+name: CI
+
+on:
+  # Only main on push. A branch with an open PR would otherwise run the whole
+  # workflow twice for every commit — once for `push`, once for `pull_request` —
+  # doubling CI minutes and putting duplicate check runs on the PR.
+  push:
+    branches: [main]
+  pull_request:
+
+# A second push to the same branch makes the first run pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: portal
+          POSTGRES_PASSWORD: portal
+          POSTGRES_DB: portal_test
+        options: >-
+          --health-cmd "pg_isready -U portal -d portal_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+        ports: ['5432:5432']
+
+    env:
+      DATABASE_URL: postgresql://portal:portal@localhost:5432/portal_test
+      # Set so the refresh-rotation and report-access suites run instead of
+      # skipping. Without it they self-skip and CI goes green having tested
+      # none of the authorization logic.
+      TEST_DATABASE_URL: postgresql://portal:portal@localhost:5432/portal_test
+      # Placeholders: config/env.ts validates shape at import time, and every
+      # test that would reach Azure stubs the client. No real credentials are
+      # needed, and none should ever be added here.
+      JWT_SECRET: ci-only-secret-at-least-thirty-two-characters
+      AZURE_TENANT_ID: 00000000-0000-0000-0000-000000000000
+      AZURE_CLIENT_ID: 00000000-0000-0000-0000-000000000000
+      AZURE_CLIENT_SECRET: ci-placeholder
+      NODE_ENV: test
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Migrate
+        run: npm run migrate
+
+      # Guards against a migration that only applies to an already-populated
+      # database — the failure mode you otherwise discover during a deploy.
+      - name: Migrations are idempotent
+        run: npm run migrate
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      # The blocker this repo actually shipped: start pointed at dist/server.js
+      # while tsc emitted dist/src/server.js. Typecheck and tests both passed,
+      # because neither runs the built artifact. So run it.
+      - name: Built artifact starts and serves
+        env:
+          PORT: 4599
+          LOG_LEVEL: warn
+        run: |
+          set -u
+          PORT=4599
+
+          # Resolve whoever is listening, rather than tracking npm's children.
+          # `npm start` launches the server as a GRANDCHILD, so killing the
+          # wrapper — or even its direct child — leaves the real process alive
+          # and holding the port. Going by port is independent of how deep npm
+          # nests things, and unlike a pkill pattern it cannot match this script.
+          listener() {
+            if command -v fuser >/dev/null 2>&1; then
+              fuser -n tcp "$PORT" 2>/dev/null | tr -d ' '
+            else
+              ss -lptnH "sport = :$PORT" 2>/dev/null | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2
+            fi
+          }
+
+          stop_server() {
+            PID="$(listener)"
+            [ -n "$PID" ] && kill "$PID" 2>/dev/null || true
+            # SIGTERM begins a graceful drain — correct in production, pointless
+            # here, and long enough that the process would outlive this step and
+            # be reaped as an orphan.
+            for _ in $(seq 1 5); do [ -z "$(listener)" ] && break; sleep 1; done
+            PID="$(listener)"
+            [ -n "$PID" ] && kill -9 "$PID" 2>/dev/null || true
+          }
+
+          npm start &
+
+          for _ in $(seq 1 30); do
+            if curl -fsS -H 'Connection: close' "http://127.0.0.1:$PORT/api/health/live" >/dev/null 2>&1; then
+              echo "compiled server is serving"
+              stop_server
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "::error::compiled server did not serve /api/health/live within 30s"
+          stop_server
+          exit 1
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        workspace: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          # setup-node v5+ turns package-manager caching on by itself when no
+          # `cache` input is given. There is no lockfile at the repository root
+          # — backend/ and frontend/ each hold their own — and this job only
+          # reads the audit endpoint, so there is nothing worth caching. Off,
+          # explicitly, rather than relying on detection finding nothing.
+          package-manager-cache: false
+
+      # This job REPORTS advisories, it does not gate on them, and it has to
+      # actually succeed to mean that. Job-level `continue-on-error` does not
+      # achieve it: the workflow goes green but the check run still reports
+      # `failure`, so the PR carries a permanently red check — which is how
+      # people learn to ignore red checks entirely.
+      #
+      # Findings go to the run summary and to a warning annotation, so they are
+      # visible without being a false alarm. Promote to a hard gate by dropping
+      # the `|| true` once the baseline is clean.
+      - name: Audit ${{ matrix.workspace }}
+        working-directory: ${{ matrix.workspace }}
+        run: |
+          npm audit --json > audit.json || true
+
+          node -e '
+            const a = require("./audit.json");
+            const v = (a.metadata && a.metadata.vulnerabilities) || {};
+            const ws = process.env.WORKSPACE;
+            const bad = (v.high || 0) + (v.critical || 0);
+
+            const rows = Object.entries(a.vulnerabilities || {})
+              .filter(([, x]) => ["high", "critical"].includes(x.severity))
+              .map(([name, x]) => `| \`${name}\` | ${x.severity} | ${x.isDirect ? "direct" : "transitive"} |`);
+
+            const out = [
+              `### ${ws} dependency audit`,
+              "",
+              `critical ${v.critical || 0} · high ${v.high || 0} · moderate ${v.moderate || 0} · low ${v.low || 0}`,
+              "",
+              ...(rows.length
+                ? ["| package | severity | kind |", "|---|---|---|", ...rows]
+                : ["No high or critical advisories."]),
+              "",
+            ].join("\n");
+
+            require("fs").appendFileSync(process.env.GITHUB_STEP_SUMMARY, out);
+            console.log(out);
+
+            if (bad > 0) {
+              console.log(`::warning title=${ws} advisories::${bad} high/critical advisory(ies) — see the run summary`);
+            }
+          '
+        env:
+          WORKSPACE: ${{ matrix.workspace }}

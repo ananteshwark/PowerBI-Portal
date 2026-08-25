@@ -1,0 +1,31 @@
+# Local development dependencies only — the app itself runs via `npm run dev`
+# in backend/ and frontend/ so you keep hot reload.
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: powerbi-portal-db
+    environment:
+      POSTGRES_USER: portal
+      POSTGRES_PASSWORD: portal
+      POSTGRES_DB: powerbi_portal
+    ports:
+      - '5432:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U portal -d powerbi_portal']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Optional. Required once you run more than one backend instance, so that
+  # embed tokens are cached fleet-wide rather than per-process.
+  redis:
+    image: redis:7-alpine
+    container_name: powerbi-portal-cache
+    ports:
+      - '6379:6379'
+    profiles: ['redis']
+
+volumes:
+  pgdata:
